@@ -106,7 +106,7 @@ def get_cached_response(query_vector: list[float]) -> dict | None:
 def store_cached_response(query_vector: list[float], response_payload: dict) -> None:
     try:
         cache_key = str(uuid.uuid4())
-        redis_client.set(cache_key, json.dumps(response_payload), ex=CACHE_TTL_SECONDS)  
+        redis_client.set(cache_key, json.dumps(response_payload), ex=CACHE_TTL_SECONDS)
         qdrant.upsert(
             collection_name=CACHE_COLLECTION,
             points=[models.PointStruct(id=cache_key, vector=query_vector, payload={})],
@@ -259,7 +259,11 @@ def query(req: QueryRequest):
         ],
         "refused": False,
     }
-    store_cached_response(query_vector, response_payload)
+
+    should_cache = routing_reason != "fallback_failed" and faithfulness.get("faithful") is not None
+    if should_cache:
+        store_cached_response(query_vector, response_payload)
+
     return {**response_payload, "pii_detected": pii_types, "cached": False, "trace_id": trace_id}
 
 
