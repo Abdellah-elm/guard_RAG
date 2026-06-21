@@ -143,8 +143,7 @@ def generate_answer(context: str, question: str, model: str) -> str:
 
 @observe(as_type="evaluator", name="faithfulness_check")
 def check_faithfulness(context: str, answer: str) -> dict:
-    judge_prompt = f"""You are a strict fact-checker. Given the CONTEXT and an ANSWER, \
-determine if every claim in the ANSWER is directly supported by the CONTEXT.
+    judge_prompt = f"""You are a fact-checker evaluating whether an ANSWER is faithful to its CONTEXT.
 
 CONTEXT:
 {context}
@@ -152,9 +151,17 @@ CONTEXT:
 ANSWER:
 {answer}
 
-If the ANSWER states that it doesn't have enough information to answer (a refusal or \
-non-answer), that is always faithful — respond with faithful=true and an empty \
-unsupported_claims list, since declining to answer is not a false claim.
+Flag a claim as unsupported ONLY if it is factually contradicted by the context, or if it states a
+specific technical detail (an exact file path, function name, config key, command, or similar) with
+confident, authoritative phrasing that is not actually present in the context.
+
+Do NOT flag: reasonable generalizations, common-sense elaboration, claims the answer itself hedges
+("typically", "the exact details may vary"), or restating what a well-known term/acronym means. The
+bar is "does this claim mislead the reader," not "does this exact phrase appear verbatim in the context."
+
+If the ANSWER states that it doesn't have enough information to answer (a refusal or non-answer),
+that is always faithful — respond with faithful=true and an empty unsupported_claims list, since
+declining to answer is not a false claim. This rule has no exceptions.
 
 Respond with JSON only, no other text, no markdown fences:
 {{"faithful": true/false, "unsupported_claims": ["..."], "confidence": 0.0}}"""
