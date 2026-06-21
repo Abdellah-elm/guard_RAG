@@ -80,13 +80,14 @@ SYSTEM_PROMPT = (
     "the answer, say you don't have that information — never invent details."
 )
 
+PII_ENTITIES = ["EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "US_SSN", "IBAN_CODE", "IP_ADDRESS"]
+
 
 def redact_pii(text: str) -> tuple[str, list[str]]:
-    findings = pii_analyzer.analyze(text=text, language="en", allow_list=DOMAIN_ALLOW_LIST)
+    findings = pii_analyzer.analyze(text=text, language="en", entities=PII_ENTITIES)
     entity_types = sorted({f.entity_type for f in findings})
     anonymized = pii_anonymizer.anonymize(text=text, analyzer_results=findings)
     return anonymized.text, entity_types
-
 
 def get_cached_response(query_vector: list[float]) -> dict | None:
     try:
