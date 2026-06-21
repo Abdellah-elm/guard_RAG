@@ -1,0 +1,29 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: guardrag-qdrant
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  redis:
+    image: redis:7-alpine
+    container_name: guardrag-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+# vLLM is intentionally not in this compose file: it needs GPU passthrough
+# (--gpus all / nvidia-container-toolkit), which is simpler to run directly
+# on the host for now. See README for the local vLLM launch command.
+# Langfuse: using the cloud free tier for v1 to avoid running its
+# Postgres+ClickHouse+Redis+S3 stack on a laptop that's already serving a
+# local LLM. Self-host later if you outgrow the free tier.
+
+volumes:
+  qdrant_data:
+  redis_data:
