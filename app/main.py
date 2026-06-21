@@ -75,26 +75,30 @@ def redact_pii(text: str) -> tuple[str, list[str]]:
     anonymized = pii_anonymizer.anonymize(text=text, analyzer_results=findings)
     return anonymized.text, entity_types
 
-
 def get_cached_response(query_vector: list[float]) -> dict | None:
-    hits = qdrant.query_points(
-        collection_name=CACHE_COLLECTION, query=query_vector, limit=1,
-        score_threshold=CACHE_SIMILARITY_THRESHOLD,
-    ).points
-    if not hits:
-        return None
-    cached = redis_client.get(str(hits[0].id))
-    return json.loads(cached) if cached else None
+    try:
+        hits = qdrant.query_points(
+            collection_name=CACHE_COLLECTION, query=query_vector, limit=1,
+            score_threshold=CACHE_SIMILARITY_THRESHOLD,
+        ).points
+        if not hits:
+            return None
+        cached = redis_client.get(str(hits[0].id))
+        return json.loads(cached) if cached else None
+    except Exception:
+        return None  # cache indisponible -> traité comme un miss, pas de crash
 
 
 def store_cached_response(query_vector: list[float], response_payload: dict) -> None:
-    cache_key = str(uuid.uuid4())
-    redis_client.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(response_payload))
-    qdrant.upsert(
-        collection_name=CACHE_COLLECTION,
-        points=[models.PointStruct(id=cache_key, vector=query_vector, payload={})],
-    )
-
+    try:
+        cache_key = str(uuid.uuid4())
+        redis_client.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(response_payload))
+        qdrant.upsert(
+            collection_name=CACHE_COLLECTION,
+            points=[models.PointStruct(id=cache_key, vector=query_vector, payload={})],
+        )
+    except Exception:
+        pass  # le cache est une optimisation, jamais un point de défaillance critique
 
 @observe(as_type="generation", name="answer_generation")
 def generate_answer(context: str, question: str, model: str) -> str:
