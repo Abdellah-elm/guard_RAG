@@ -77,7 +77,11 @@ class FeedbackRequest(BaseModel):
 SYSTEM_PROMPT = (
     "You are a technical support assistant for Qiskit / IBM Quantum. "
     "Answer ONLY using the provided context. If the context doesn't contain "
-    "the answer, say you don't have that information — never invent details."
+    "the answer, say you don't have that information — never invent details. "
+    "If the context establishes a general procedure or topic but does not give "
+    "an exact value (a specific file path, config key name, parameter name, or "
+    "version number), say so explicitly rather than inventing a plausible-looking "
+    "value — name what's missing instead of filling the gap."
 )
 
 PII_ENTITIES = ["EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "US_SSN", "IBAN_CODE", "IP_ADDRESS"]
@@ -88,6 +92,7 @@ def redact_pii(text: str) -> tuple[str, list[str]]:
     entity_types = sorted({f.entity_type for f in findings})
     anonymized = pii_anonymizer.anonymize(text=text, analyzer_results=findings)
     return anonymized.text, entity_types
+
 
 def get_cached_response(query_vector: list[float]) -> dict | None:
     try:
@@ -153,17 +158,21 @@ unsupported_claims list, since declining to answer is not a false claim.
 
 Respond with JSON only, no other text, no markdown fences:
 {{"faithful": true/false, "unsupported_claims": ["..."], "confidence": 0.0}}"""
-    try:
-        judge_response = groq.chat.completions.create(
-            model=FAST_MODEL,
-            messages=[{"role": "user", "content": judge_prompt}],
-            temperature=0,
-        )
-        raw = judge_response.choices[0].message.content.strip()
-        return json.loads(raw)
-    except Exception as e:
-        logger.warning(f"faithfulness check failed: {e}")
-        return {"faithful": None, "unsupported_claims": [], "confidence": 0.0, "raw": None}
+
+    for judge_model in (FAST_MODEL, STRONG_MODEL):
+        try:
+            judge_response = groq.chat.completions.create(
+                model=judge_model,
+                messages=[{"role": "user", "content": judge_prompt}],
+                temperature=0,
+            )
+            raw = judge_response.choices[0].message.content.strip()
+            return json.loads(raw)
+        except Exception as e:
+            logger.warning(f"faithfulness check failed on {judge_model}: {e}")
+            continue
+
+    return {"faithful": None, "unsupported_claims": [], "confidence": 0.0, "raw": None}
 
 
 def generate_with_routing(context: str, question: str, top_score: float) -> tuple[str, dict, str, str]:
