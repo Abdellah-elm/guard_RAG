@@ -53,7 +53,6 @@ langfuse = get_client()
 redis_client = UpstashRedis(
     url=os.getenv("UPSTASH_REDIS_URL"),
     token=os.getenv("UPSTASH_REDIS_TOKEN"),
-    decode_responses=True,
     protocol=2,
 )
 
