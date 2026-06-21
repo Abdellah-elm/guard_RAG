@@ -19,14 +19,17 @@ CACHE_COLLECTION = "query_cache"
 EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 FAST_MODEL = "openai/gpt-oss-20b"
 STRONG_MODEL = "openai/gpt-oss-120b"
-COMPLEXITY_THRESHOLD = 0.65  # en dessous de ce score retrieval, on part direct sur le modèle fort
+COMPLEXITY_THRESHOLD = 0.65
 REFUSAL_THRESHOLD = 0.5
 CACHE_SIMILARITY_THRESHOLD = 0.95
 CACHE_TTL_SECONDS = 86400
 REFUSAL_MESSAGE = "I don't have enough information in the documentation to answer that confidently."
 
 app = FastAPI()
-qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
+qdrant = QdrantClient(
+    url=os.getenv("QDRANT_CLOUD_URL","http://localhost:6333"),
+    api_key=os.getenv("QDRANT_CLOUD_API_KEY"),  # None en local, requis en prod
+)
 embedder = SentenceTransformer(EMBED_MODEL_NAME)
 groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
 pii_analyzer = AnalyzerEngine()
@@ -46,6 +49,12 @@ if not qdrant.collection_exists(CACHE_COLLECTION):
 class QueryRequest(BaseModel):
     question: str
     top_k: int = 5
+
+
+class FeedbackRequest(BaseModel):
+    trace_id: str
+    rating: int  # 1 = thumbs up, -1 = thumbs down
+    comment: str | None = None
 
 
 SYSTEM_PROMPT = (
@@ -130,6 +139,7 @@ Respond with JSON only, no other text, no markdown fences:
     except json.JSONDecodeError:
         return {"faithful": None, "unsupported_claims": [], "confidence": 0.0, "raw": raw}
 
+
 def generate_with_routing(context: str, question: str, top_score: float) -> tuple[str, dict, str]:
     model = FAST_MODEL if top_score >= COMPLEXITY_THRESHOLD else STRONG_MODEL
 
@@ -152,6 +162,7 @@ def generate_with_routing(context: str, question: str, top_score: float) -> tupl
 @app.post("/query")
 @observe(name="rag_query")
 def query(req: QueryRequest):
+    trace_id = langfuse.get_current_trace_id()
     safe_question, pii_types = redact_pii(req.question)
     if pii_types:
         langfuse.score_current_trace(name="pii_detected", value=1.0, data_type="BOOLEAN")
@@ -161,7 +172,7 @@ def query(req: QueryRequest):
     cached = get_cached_response(query_vector)
     if cached:
         langfuse.score_current_trace(name="cache_hit", value=1.0, data_type="BOOLEAN")
-        return {**cached, "pii_detected": pii_types, "cached": True}
+        return {**cached, "pii_detected": pii_types, "cached": True, "trace_id": trace_id}
 
     results = qdrant.query_points(
         collection_name=COLLECTION, query=query_vector, limit=req.top_k
@@ -173,6 +184,7 @@ def query(req: QueryRequest):
             "answer": REFUSAL_MESSAGE,
             "faithfulness": {"faithful": None, "unsupported_claims": [], "confidence": 0.0},
             "sources": [], "pii_detected": pii_types, "refused": True, "cached": False,
+            "trace_id": trace_id,
         }
 
     context = "\n\n".join(
@@ -196,4 +208,16 @@ def query(req: QueryRequest):
         "refused": False,
     }
     store_cached_response(query_vector, response_payload)
-    return {**response_payload, "pii_detected": pii_types, "cached": False}
+    return {**response_payload, "pii_detected": pii_types, "cached": False, "trace_id": trace_id}
+
+
+@app.post("/feedback")
+def feedback(req: FeedbackRequest):
+    langfuse.create_score(
+        trace_id=req.trace_id,
+        name="user_feedback",
+        value=req.rating,
+        data_type="NUMERIC",
+        comment=req.comment,
+    )
+    return {"status": "recorded"}
