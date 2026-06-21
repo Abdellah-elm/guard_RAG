@@ -139,16 +139,16 @@ unsupported_claims list, since declining to answer is not a false claim.
 
 Respond with JSON only, no other text, no markdown fences:
 {{"faithful": true/false, "unsupported_claims": ["..."], "confidence": 0.0}}"""
-    judge_response = groq.chat.completions.create(
-        model=FAST_MODEL,
-        messages=[{"role": "user", "content": judge_prompt}],
-        temperature=0,
-    )
-    raw = judge_response.choices[0].message.content.strip()
     try:
+        judge_response = groq.chat.completions.create(
+            model=FAST_MODEL,
+            messages=[{"role": "user", "content": judge_prompt}],
+            temperature=0,
+        )
+        raw = judge_response.choices[0].message.content.strip()
         return json.loads(raw)
-    except json.JSONDecodeError:
-        return {"faithful": None, "unsupported_claims": [], "confidence": 0.0, "raw": raw}
+    except Exception:
+        return {"faithful": None, "unsupported_claims": [], "confidence": 0.0, "raw": None}
 
 
 def generate_with_routing(context: str, question: str, top_score: float) -> tuple[str, dict, str]:
@@ -158,17 +158,27 @@ def generate_with_routing(context: str, question: str, top_score: float) -> tupl
         answer = generate_answer(context, question, model)
     except Exception:
         model = STRONG_MODEL if model == FAST_MODEL else FAST_MODEL
-        answer = generate_answer(context, question, model)
+        try:
+            answer = generate_answer(context, question, model)
+        except Exception:
+            return (
+                "I'm temporarily unable to generate an answer — please try again in a few seconds.",
+                {"faithful": None, "unsupported_claims": [], "confidence": 0.0},
+                model,
+            )
 
-    faithfulness = check_faithfulness(context, answer)
+    faithfulness = check_faithfulness(context, answer)  # ne plante plus jamais, retourne un dict même en cas d'erreur
 
     if faithfulness.get("faithful") is False and model == FAST_MODEL:
-        model = STRONG_MODEL
-        answer = generate_answer(context, question, model)
-        faithfulness = check_faithfulness(context, answer)
+        try:
+            model = STRONG_MODEL
+            escalated_answer = generate_answer(context, question, model)
+            escalated_faithfulness = check_faithfulness(context, escalated_answer)
+            answer, faithfulness = escalated_answer, escalated_faithfulness
+        except Exception:
+            pass  # garde la réponse du modèle rapide si l'escalade elle-même échoue
 
     return answer, faithfulness, model
-
 @app.get("/", response_class=HTMLResponse)
 def serve_ui():
     return (Path(__file__).parent.parent / "static" / "index.html").read_text(encoding="utf-8")
