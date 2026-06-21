@@ -1,11 +1,15 @@
 import json
+import logging
 import os
 import uuid
+from pathlib import Path
+
 from dotenv import load_dotenv
 load_dotenv()
 
 import redis
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from groq import Groq
 from qdrant_client import QdrantClient, models
@@ -14,8 +18,9 @@ from presidio_analyzer import AnalyzerEngine
 from presidio_analyzer.nlp_engine import NlpEngineProvider
 from presidio_anonymizer import AnonymizerEngine
 from langfuse import get_client, observe
-from pathlib import Path
-from fastapi.responses import HTMLResponse
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+logger = logging.getLogger("guardrag")
 
 COLLECTION = "qiskit_docs"
 CACHE_COLLECTION = "query_cache"
@@ -27,22 +32,29 @@ REFUSAL_THRESHOLD = 0.5
 CACHE_SIMILARITY_THRESHOLD = 0.95
 CACHE_TTL_SECONDS = 86400
 REFUSAL_MESSAGE = "I don't have enough information in the documentation to answer that confidently."
+DOMAIN_ALLOW_LIST = ["Qiskit", "IBM", "MCP", "Python", "Runtime"]
 
 app = FastAPI()
 qdrant = QdrantClient(
-    url=os.getenv("QDRANT_CLOUD_URL","http://localhost:6333"),
-    api_key=os.getenv("QDRANT_CLOUD_API_KEY"),  # None en local, requis en prod
+    url=os.getenv("QDRANT_URL", "http://localhost:6333"),
+    api_key=os.getenv("QDRANT_API_KEY"),
 )
 embedder = SentenceTransformer(EMBED_MODEL_NAME)
 groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
 nlp_engine = NlpEngineProvider(nlp_configuration={
     "nlp_engine_name": "spacy",
     "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
 }).create_engine()
 pii_analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
 pii_anonymizer = AnonymizerEngine()
+
 langfuse = get_client()
-redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"), decode_responses=True)
+redis_client = redis.from_url(
+    os.getenv("REDIS_URL", "redis://localhost:6379"),
+    decode_responses=True,
+    protocol=2,
+)
 
 if not qdrant.collection_exists(CACHE_COLLECTION):
     qdrant.create_collection(
@@ -72,10 +84,11 @@ SYSTEM_PROMPT = (
 
 
 def redact_pii(text: str) -> tuple[str, list[str]]:
-    findings = pii_analyzer.analyze(text=text, language="en")
+    findings = pii_analyzer.analyze(text=text, language="en", allow_list=DOMAIN_ALLOW_LIST)
     entity_types = sorted({f.entity_type for f in findings})
     anonymized = pii_anonymizer.anonymize(text=text, analyzer_results=findings)
     return anonymized.text, entity_types
+
 
 def get_cached_response(query_vector: list[float]) -> dict | None:
     try:
@@ -87,8 +100,9 @@ def get_cached_response(query_vector: list[float]) -> dict | None:
             return None
         cached = redis_client.get(str(hits[0].id))
         return json.loads(cached) if cached else None
-    except Exception:
-        return None  # cache indisponible -> traité comme un miss, pas de crash
+    except Exception as e:
+        logger.warning(f"cache read failed: {e}")
+        return None
 
 
 def store_cached_response(query_vector: list[float], response_payload: dict) -> None:
@@ -99,8 +113,9 @@ def store_cached_response(query_vector: list[float], response_payload: dict) -> 
             collection_name=CACHE_COLLECTION,
             points=[models.PointStruct(id=cache_key, vector=query_vector, payload={})],
         )
-    except Exception:
-        pass  # le cache est une optimisation, jamais un point de défaillance critique
+    except Exception as e:
+        logger.warning(f"cache write failed: {e}")
+
 
 @observe(as_type="generation", name="answer_generation")
 def generate_answer(context: str, question: str, model: str) -> str:
@@ -147,41 +162,54 @@ Respond with JSON only, no other text, no markdown fences:
         )
         raw = judge_response.choices[0].message.content.strip()
         return json.loads(raw)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"faithfulness check failed: {e}")
         return {"faithful": None, "unsupported_claims": [], "confidence": 0.0, "raw": None}
 
 
-def generate_with_routing(context: str, question: str, top_score: float) -> tuple[str, dict, str]:
-    model = FAST_MODEL if top_score >= COMPLEXITY_THRESHOLD else STRONG_MODEL
+def generate_with_routing(context: str, question: str, top_score: float) -> tuple[str, dict, str, str]:
+    if top_score >= COMPLEXITY_THRESHOLD:
+        model, reason = FAST_MODEL, "routed_fast_high_confidence"
+    else:
+        model, reason = STRONG_MODEL, "routed_strong_low_confidence"
 
     try:
         answer = generate_answer(context, question, model)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"generate_answer failed on {model}: {e}")
         model = STRONG_MODEL if model == FAST_MODEL else FAST_MODEL
+        reason = "fallback_on_api_error"
         try:
             answer = generate_answer(context, question, model)
-        except Exception:
+        except Exception as e2:
+            logger.error(f"generate_answer failed on fallback {model}: {e2}")
             return (
                 "I'm temporarily unable to generate an answer — please try again in a few seconds.",
                 {"faithful": None, "unsupported_claims": [], "confidence": 0.0},
                 model,
+                "fallback_failed",
             )
 
-    faithfulness = check_faithfulness(context, answer)  # ne plante plus jamais, retourne un dict même en cas d'erreur
+    faithfulness = check_faithfulness(context, answer)
 
     if faithfulness.get("faithful") is False and model == FAST_MODEL:
         try:
             model = STRONG_MODEL
+            reason = "faithfulness_escalation"
             escalated_answer = generate_answer(context, question, model)
             escalated_faithfulness = check_faithfulness(context, escalated_answer)
             answer, faithfulness = escalated_answer, escalated_faithfulness
-        except Exception:
-            pass  # garde la réponse du modèle rapide si l'escalade elle-même échoue
+        except Exception as e:
+            logger.warning(f"escalation to {model} failed: {e}")
 
-    return answer, faithfulness, model
+    return answer, faithfulness, model, reason
+
+
 @app.get("/", response_class=HTMLResponse)
 def serve_ui():
     return (Path(__file__).parent.parent / "static" / "index.html").read_text(encoding="utf-8")
+
+
 @app.post("/query")
 @observe(name="rag_query")
 def query(req: QueryRequest):
@@ -215,14 +243,17 @@ def query(req: QueryRequest):
         for p in results
     )
 
-    answer, faithfulness, model_used = generate_with_routing(context, safe_question, results[0].score)
+    answer, faithfulness, model_used, routing_reason = generate_with_routing(
+        context, safe_question, results[0].score
+    )
     langfuse.score_current_trace(
         name="faithfulness", value=1.0 if faithfulness.get("faithful") else 0.0, data_type="BOOLEAN"
     )
     langfuse.score_current_trace(name="cache_hit", value=0.0, data_type="BOOLEAN")
 
     response_payload = {
-        "answer": answer, "faithfulness": faithfulness, "model_used": model_used,
+        "answer": answer, "faithfulness": faithfulness,
+        "model_used": model_used, "routing_reason": routing_reason,
         "sources": [
             {"doc_title": p.payload["doc_title"], "section": p.payload["section"],
              "url": p.payload["url"], "score": p.score}
