@@ -20,7 +20,7 @@ app_port: 7860
 
 Most "RAG demo" projects stop at retrieval + generation. The hard part of running an LLM application in production is everything around that: catching hallucinations before they reach a user, redacting PII before it hits a third-party API, controlling cost, knowing when something breaks, and proving any of it actually works. GuardRAG is built to show that layer explicitly — every answer ships with a visible readout of how it was produced, not just the answer itself.
 
-The corpus is the official [Qiskit/documentation](https://github.com/Qiskit/documentation) (CC BY-SA 4.0). It's also a domain I can personally verify — when the system says it's 78% faithful, I can check that against my own quantum computing research background instead of trusting a metric blindly.
+The corpus is the official [Qiskit/documentation](https://github.com/Qiskit/documentation) (CC BY-SA 4.0). It's also a domain I can personally verify — when the system reports a faithfulness rate, I can check that against my own quantum computing research background instead of trusting a metric blindly.
 
 ## Architecture
 
@@ -52,25 +52,31 @@ Response + Langfuse trace (tokens, cost, latency, scores) + cache write (confide
 
 ## Evaluation
 
-Measured against a 24-question golden set (12 in-scope, 5 out-of-scope, 3 ambiguous, 3 with embedded PII, 1 prompt-injection probe) run through `eval/run_eval.py` against the live deployment. Full methodology, raw results, and the question set are in [`eval/`](./eval).
+Measured against a 54-question golden set (12 in-scope, 20 out-of-scope, 3 ambiguous, 18 with embedded PII across 6 entity types, 1 prompt-injection probe) run through `eval/run_eval.py` against the live deployment, across multiple independent runs. Full methodology, raw results, and the question set are in [`eval/`](./eval).
 
 | Metric | Result |
 |---|---|
-| Out-of-scope questions correctly refused | **100%** (5/5) |
+| Out-of-scope questions never resulting in a fabricated answer | **100%** (20/20) |
+| Out-of-scope questions caught by the retrieval-confidence gate specifically | **85%** (17/20) — the remaining 3 were caught one layer later, see below |
 | In-scope questions correctly answered (not falsely refused) | **100%** (12/12) |
-| Faithfulness rate (answered, non-refused questions) | **78%** |
+| Faithfulness rate, genuinely-generated answers with a clear judge verdict | **84–89%**, consistent across two independent runs (16/19 and 16/18) |
 | PII false-positive rate on clean questions | **0%** |
-| PII true-positive rate on questions containing real PII | **67%** (2/3 — see limitations) |
-| Latency, full round trip (p50 / p90 / p95) | **~1.7s / ~3.0s / ~3.8s** |
-| Fast-tier (20B) vs strong-tier (120B) routing split | **~65% / ~35%** |
+| PII true-positive rate, 5 of 6 entity types (email, phone, credit card, IBAN, IP) | **100%** (13/13) |
+| PII true-positive rate, SSN specifically | **33%** (1/3) — an isolated, reproducible recognizer gap, not a general guardrail failure |
+| Latency, full round trip under normal load (p50 / p90 / p95) | **~1.7s / ~3.0s / ~3.8s** |
+| Fast-tier (20B) vs strong-tier (120B) routing split | **~65% / ~35%** under normal load |
 
-The refusal threshold (0.6) was calibrated empirically from this eval: off-topic questions ("best pizza topping") were measured retrieving spurious matches around 0.50–0.54 cosine similarity, while genuine in-scope matches consistently scored 0.65+. The first eval run, before this calibration, caught a real bug — the threshold was too permissive and let 2/5 out-of-scope questions through to generation.
+**Two findings worth calling out specifically:**
+
+*Defense in depth on refusal.* The retrieval-confidence gate (threshold 0.6, calibrated empirically — off-topic queries measured retrieving spurious matches around 0.50–0.54 cosine similarity, genuine matches consistently 0.65+) caught 17/20 out-of-scope questions outright. The 3 it missed ("chemical formula for table salt," "how do I make a paper airplane," "how do I file my taxes") scored just above threshold due to weak spurious retrieval matches — but in all 3 cases, the generation layer's own grounding instruction caught what the gate didn't, honestly declining rather than fabricating an answer. Zero hallucinated answers across 20 out-of-scope questions, even when the first line of defense let something through. The very first eval run, before any threshold calibration, did catch a real bug: an uncalibrated 0.5 threshold let 2/5 out-of-scope questions straight through to generation with no safety net at all.
+
+*Faithfulness numbers were cross-validated against blind human labeling*, not just trusted at face value. After diagnosing and fixing the judge's initial over-strictness (it was flagging reasonable, hedged elaboration as "unsupported" — see Guardrails below), 18 answers were independently labeled faithful/unfaithful by hand, without seeing the judge's verdict first, and compared: 100% agreement (18/18), including both confabulation cases the judge caught.
 
 ## Guardrails
 
-- **Faithfulness** — an LLM-as-judge call compares each answer against its retrieved context. Honest refusals ("I don't have that information") are explicitly scored as faithful, not penalized, since declining to answer isn't a false claim.
-- **PII redaction** — restricted to pattern-based entities (email, phone, credit card, SSN, IBAN, IP address) rather than NER-based categories (PERSON, LOCATION). An earlier version using NER false-positived on domain vocabulary — "Qiskit" was misclassified as a person's name by the small NLP model, redacting it out of questions and breaking retrieval quality. Switching to structural-pattern entities only eliminated that failure class.
-- **Refusal** — gated on retrieval confidence, calibrated against measured spurious-match scores (see Evaluation above).
+- **Faithfulness** — an LLM-as-judge call compares each answer against its retrieved context, with automatic fallback to the strong tier if the fast tier is unavailable (the judge is a single point of failure otherwise — discovered when a sustained Groq outage silently disabled it mid-eval). Honest refusals ("I don't have that information") are explicitly scored as faithful, not penalized, since declining to answer isn't a false claim. The judge's verdicts were validated against blind human labeling (100% agreement, 18/18) after an early version was found to be over-strict, flagging reasonable hedged elaboration as "unsupported" — prompt was rewritten to flag only claims that actually mislead, not claims that merely aren't verbatim in the context.
+- **PII redaction** — restricted to pattern-based entities (email, phone, credit card, SSN, IBAN, IP address) rather than NER-based categories (PERSON, LOCATION). An earlier version using NER false-positived on domain vocabulary — "Qiskit" was misclassified as a person's name by the small NLP model, redacting it out of questions and breaking retrieval quality. Switching to structural-pattern entities only eliminated that failure class. Of the 6 pattern entities, 5 catch reliably (100%, 13/13 tested); SSN specifically is weak (1/3) — see Known limitations.
+- **Refusal** — gated on retrieval confidence, calibrated against measured spurious-match scores, backed by a second line of defense in the generation prompt (see Evaluation above).
 
 ## Cost & resilience
 
@@ -81,11 +87,10 @@ The refusal threshold (0.6) was calibrated empirically from this eval: off-topic
 
 ## Known limitations
 
-- **PII / SSN recognition**: Presidio's SSN recognizer is context-sensitive and missed a synthetic SSN in testing (1/3 false negative in the PII eval set). Documented rather than papered over.
-- **Faithfulness judge resilience**: the judge call always runs on the fast tier. Under sustained load against Groq's free-tier rate limits, judge calls can fail, returning an "unknown" rather than a real verdict — a constraint of the free-tier infrastructure choice, not the evaluation logic itself.
-- **Latency under sustained load**: single-user interactive latency is consistently ~1-2s, but the free Groq tier throttles hard under rapid sequential load (the eval harness itself had to add deliberate pacing to get clean measurements). A production deployment would need a paid tier or request queuing.
-- **No reranking stage**: retrieval is single-pass cosine similarity; a cross-encoder rerank step would likely improve precision on ambiguous queries but wasn't built for this version.
-- **No CI/CD pipeline or A/B testing**: deliberately deprioritized — CI/CD adds limited signal for a single-developer project at this stage, and A/B testing isn't statistically meaningful without real production traffic.
+- **PII / SSN recognition**: Presidio's SSN recognizer is context-sensitive and caught only 1/3 synthetic SSNs in testing, while the other 5 entity types it checks caught 13/13. An isolated, reproducible gap — documented rather than papered over, not generalized into a vaguer "PII detection is unreliable" claim it doesn't deserve.
+- **Latency under sustained load**: single-user interactive latency is consistently ~1.7-3.8s, but the free Groq tier throttles hard under rapid sequential load — the eval harness itself had to add deliberate pacing, and a 33-call run still hit a sustained outage (12/33 generations failing on both tiers at once) partway through this project. A production deployment would need a paid tier or request queuing.
+- **No reranking stage**: retrieval is single-pass cosine similarity; a cross-encoder rerank step would likely help on ambiguous queries but wasn't built for this version — left out deliberately rather than added speculatively, since the eval never showed retrieval precision as the dominant failure mode.
+- **No CI/CD pipeline or full A/B testing**: deliberately deprioritized — A/B testing isn't statistically meaningful without real production traffic. A lightweight CI step that reruns the eval harness on every push would have real signal here (catching faithfulness regressions) and is the one piece of this list worth reconsidering first.
 
 ## Stack
 
@@ -109,10 +114,10 @@ Full setup details, including the Qdrant Cloud / Upstash migration path used for
 
 ## What I'd build next with more time/budget
 
-- A cross-encoder reranking stage before generation
-- A paid LLM tier to remove the rate-limit ceiling on the evaluation harness itself
+- A cross-encoder reranking stage before generation, if a future eval shows retrieval precision (not generation or judge behavior) as the dominant failure mode
+- A paid LLM tier to remove the rate-limit ceiling that constrained the evaluation harness itself
 - Kubernetes deployment (the original target, scaled back to Hugging Face Spaces for a zero-cost path)
-- A larger, stratified eval set with statistical confidence intervals rather than a single 24-question pass
+- A lightweight CI step rerunning the eval harness on every push, to catch faithfulness regressions automatically
 
 ---
 
