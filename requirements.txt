@@ -1,6 +1,7 @@
 fastapi>=0.115
 uvicorn[standard]>=0.32
 qdrant-client>=1.12
+upstash-redis>=1.0
 redis>=5.2
 upstash-redis>=1.0
 sentence-transformers>=3.3
