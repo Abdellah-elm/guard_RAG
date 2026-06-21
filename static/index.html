@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GuardRAG — Qiskit support, instrumented</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0f14;
+    --surface: #131a22;
+    --surface-raised: #1a232d;
+    --border: #232e3a;
+    --text: #e8edf2;
+    --text-muted: #6b7785;
+    --text-dim: #45505c;
+    --amber: #f2b84b;
+    --violet: #9b8cff;
+    --red: #ff6b6b;
+    --radius: 10px;
+  }
+
+  * { box-sizing: border-box; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  }
+
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 48px 20px 80px;
+  }
+
+  .wrap {
+    width: 100%;
+    max-width: 720px;
+  }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    margin-bottom: 6px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  .brand .mark {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 14px;
+    color: var(--amber);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    letter-spacing: 0.04em;
+  }
+
+  h1 {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+
+  .stack-credit {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.02em;
+  }
+
+  .subtitle {
+    color: var(--text-muted);
+    font-size: 14.5px;
+    margin: 4px 0 34px;
+    line-height: 1.5;
+    max-width: 56ch;
+  }
+
+  .subtitle a { color: var(--text-muted); }
+  .subtitle a:hover { color: var(--text); }
+
+  form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .query-bar {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    transition: border-color 0.15s ease;
+  }
+
+  .query-bar:focus-within {
+    border-color: var(--amber);
+  }
+
+  .prompt-glyph {
+    font-family: "IBM Plex Mono", monospace;
+    color: var(--amber);
+    font-size: 16px;
+    line-height: 1.6;
+    user-select: none;
+  }
+
+  textarea#question {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    resize: none;
+    color: var(--text);
+    font-family: "IBM Plex Sans", sans-serif;
+    font-size: 15.5px;
+    line-height: 1.6;
+    min-height: 26px;
+    max-height: 180px;
+  }
+
+  textarea#question::placeholder { color: var(--text-dim); }
+
+  .row-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .examples {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .example-chip {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11.5px;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 5px 11px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
+  }
+
+  .example-chip:hover { border-color: var(--violet); color: var(--text); }
+
+  button#submit {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--bg);
+    background: var(--amber);
+    border: none;
+    border-radius: 6px;
+    padding: 9px 18px;
+    cursor: pointer;
+    transition: opacity 0.15s ease, transform 0.1s ease;
+    white-space: nowrap;
+  }
+
+  button#submit:hover { opacity: 0.88; }
+  button#submit:active { transform: scale(0.98); }
+  button#submit:disabled { opacity: 0.4; cursor: default; }
+  button#submit:focus-visible, .example-chip:focus-visible, textarea:focus-visible, .fb-btn:focus-visible {
+    outline: 2px solid var(--violet);
+    outline-offset: 2px;
+  }
+
+  #result-zone { margin-top: 28px; }
+
+  .pulse-row {
+    display: flex;
+    gap: 6px;
+    padding: 6px 0;
+  }
+  .pulse-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--text-dim);
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+  .pulse-dot:nth-child(2) { animation-delay: 0.15s; }
+  .pulse-dot:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes pulse {
+    0%, 100% { background: var(--text-dim); }
+    50% { background: var(--amber); }
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 22px 22px 18px;
+    animation: rise 0.25s ease;
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .answer-text {
+    font-size: 15.5px;
+    line-height: 1.65;
+    color: var(--text);
+    white-space: pre-wrap;
+  }
+
+  .refused-text {
+    font-size: 14.5px;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  .readout-label {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+    color: var(--text-dim);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 18px 0 12px;
+  }
+  .readout-label::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .readout-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 14px 18px;
+  }
+
+  .stat .stat-label {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+  }
+
+  .stat .stat-value {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13.5px;
+    font-weight: 500;
+  }
+
+  .v-amber { color: var(--amber); }
+  .v-violet { color: var(--violet); }
+  .v-red { color: var(--red); }
+  .v-muted { color: var(--text-muted); }
+
+  .dot { display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:6px; }
+  .dot-amber { background: var(--amber); }
+  .dot-red { background: var(--red); }
+  .dot-violet { background: var(--violet); }
+
+  .sources { display: flex; flex-direction: column; gap: 8px; }
+
+  .source-item {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    font-size: 13px;
+    padding: 6px 0;
+    border-top: 1px solid var(--border);
+  }
+  .source-item:first-child { border-top: none; padding-top: 0; }
+
+  .source-score {
+    font-family: "IBM Plex Mono", monospace;
+    color: var(--amber);
+    font-size: 12px;
+    flex-shrink: 0;
+    width: 38px;
+  }
+
+  .source-item a {
+    color: var(--text);
+    text-decoration: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .source-item a:hover { border-bottom-color: var(--violet); }
+  .source-section { color: var(--text-muted); }
+
+  .feedback-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .feedback-row span {
+    font-size: 12px;
+    color: var(--text-dim);
+    font-family: "IBM Plex Mono", monospace;
+  }
+  .fb-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
+  }
+  .fb-btn:hover { border-color: var(--violet); color: var(--text); }
+  .fb-btn.sent { color: var(--amber); border-color: var(--amber); cursor: default; }
+
+  .error-card {
+    border-color: var(--red);
+    color: var(--text-muted);
+    font-size: 14px;
+  }
+  .error-card strong { color: var(--red); }
+
+  .pii-flag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+    color: var(--red);
+    border: 1px solid var(--red);
+    border-radius: 999px;
+    padding: 2px 8px;
+    margin-bottom: 14px;
+  }
+
+  footer {
+    margin-top: 56px;
+    text-align: center;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  footer a { color: var(--text-dim); }
+  footer a:hover { color: var(--text-muted); }
+
+  @media (max-width: 600px) {
+    h1 { font-size: 22px; }
+    .card { padding: 18px 16px 14px; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <span class="mark">GR</span>
+        <h1>GuardRAG</h1>
+      </div>
+      <span class="stack-credit">FastAPI · Qdrant · Groq · Langfuse</span>
+    </header>
+    <p class="subtitle">
+      A support assistant over the official Qiskit / IBM Quantum documentation —
+      every answer ships with its own diagnostic readout: which model handled it,
+      whether it passed a faithfulness check, and where it came from.
+      <a href="https://github.com/Abdellah-elm/guard_RAG" target="_blank" rel="noopener">Source on GitHub ↗</a>
+    </p>
+
+    <form id="query-form">
+      <div class="query-bar">
+        <span class="prompt-glyph">›</span>
+        <textarea id="question" rows="1" placeholder="Ask something about Qiskit or IBM Quantum…" required></textarea>
+      </div>
+      <div class="row-actions">
+        <div class="examples" id="examples">
+          <button type="button" class="example-chip">How does dynamical decoupling work?</button>
+          <button type="button" class="example-chip">How do I install the Qiskit C API?</button>
+          <button type="button" class="example-chip">What are Qiskit MCP servers?</button>
+        </div>
+        <button type="submit" id="submit">Run query</button>
+      </div>
+    </form>
+
+    <div id="result-zone"></div>
+
+    <footer>
+      built as a production-style LLMOps reference — guardrails, routing, caching, observability
+    </footer>
+  </div>
+
+<script>
+const API_URL = window.location.origin + "/query";
+const form = document.getElementById("query-form");
+const textarea = document.getElementById("question");
+const resultZone = document.getElementById("result-zone");
+const submitBtn = document.getElementById("submit");
+const examples = document.getElementById("examples");
+
+textarea.addEventListener("input", () => {
+  textarea.style.height = "auto";
+  textarea.style.height = Math.min(textarea.scrollHeight, 180) + "px";
+});
+
+examples.addEventListener("click", (e) => {
+  const btn = e.target.closest(".example-chip");
+  if (!btn) return;
+  textarea.value = btn.textContent;
+  textarea.dispatchEvent(new Event("input"));
+  form.requestSubmit();
+});
+
+function shortModel(name) {
+  if (!name) return "—";
+  return name.replace("openai/", "");
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function renderLoading() {
+  resultZone.innerHTML = `
+    <div class="card">
+      <div class="pulse-row">
+        <span class="pulse-dot"></span><span class="pulse-dot"></span><span class="pulse-dot"></span>
+      </div>
+    </div>`;
+}
+
+function renderError(message) {
+  resultZone.innerHTML = `
+    <div class="card error-card">
+      <strong>Request failed.</strong> ${escapeHtml(message)}
+    </div>`;
+}
+
+function sendFeedback(traceId, rating, btnEl, otherBtnEl) {
+  fetch(window.location.origin + "/feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ trace_id: traceId, rating }),
+  }).catch(() => {});
+  btnEl.classList.add("sent");
+  btnEl.textContent = rating === 1 ? "✓ Marked helpful" : "✓ Marked unhelpful";
+  otherBtnEl.disabled = true;
+  otherBtnEl.style.opacity = "0.3";
+}
+
+function renderResult(data, latencyMs) {
+  if (data.refused) {
+    resultZone.innerHTML = `
+      <div class="card">
+        <p class="refused-text">${escapeHtml(data.answer)}</p>
+        <div class="readout-label">readout</div>
+        <div class="readout-grid">
+          <div class="stat"><div class="stat-label">Status</div><div class="stat-value v-muted">out of scope</div></div>
+          <div class="stat"><div class="stat-label">Latency</div><div class="stat-value v-muted">${latencyMs} ms</div></div>
+        </div>
+      </div>`;
+    return;
+  }
+
+  const faithful = data.faithfulness && data.faithfulness.faithful;
+  const faithfulLabel = faithful === true ? "verified" : faithful === false ? "flagged" : "n/a";
+  const faithfulClass = faithful === true ? "v-amber" : faithful === false ? "v-red" : "v-muted";
+  const dotClass = faithful === true ? "dot-amber" : faithful === false ? "dot-red" : "";
+
+  const piiFlag = (data.pii_detected && data.pii_detected.length)
+    ? `<div class="pii-flag">● PII redacted before generation</div>` : "";
+
+  const sourcesHtml = (data.sources || []).map(s => `
+    <div class="source-item">
+      <span class="source-score">${s.score.toFixed(2)}</span>
+      <span><a href="${s.url}" target="_blank" rel="noopener">${escapeHtml(s.doc_title)}</a>
+      <span class="source-section"> — ${escapeHtml(s.section)}</span></span>
+    </div>`).join("");
+
+  resultZone.innerHTML = `
+    <div class="card">
+      ${piiFlag}
+      <div class="answer-text">${escapeHtml(data.answer)}</div>
+
+      <div class="readout-label">readout</div>
+      <div class="readout-grid">
+        <div class="stat"><div class="stat-label">Model</div><div class="stat-value v-violet">${shortModel(data.model_used)}</div></div>
+        <div class="stat"><div class="stat-label">Faithfulness</div><div class="stat-value ${faithfulClass}"><span class="dot ${dotClass}"></span>${faithfulLabel}</div></div>
+        <div class="stat"><div class="stat-label">Cache</div><div class="stat-value ${data.cached ? "v-amber" : "v-muted"}">${data.cached ? "hit" : "miss"}</div></div>
+        <div class="stat"><div class="stat-label">Latency</div><div class="stat-value v-muted">${latencyMs} ms</div></div>
+      </div>
+
+      ${sourcesHtml ? `<div class="readout-label">sources (${data.sources.length})</div><div class="sources">${sourcesHtml}</div>` : ""}
+
+      <div class="feedback-row">
+        <span>was this useful?</span>
+        <button class="fb-btn" id="fb-up">helpful</button>
+        <button class="fb-btn" id="fb-down">not helpful</button>
+      </div>
+    </div>`;
+
+  if (data.trace_id) {
+    const up = document.getElementById("fb-up");
+    const down = document.getElementById("fb-down");
+    up.addEventListener("click", () => sendFeedback(data.trace_id, 1, up, down));
+    down.addEventListener("click", () => sendFeedback(data.trace_id, -1, down, up));
+  }
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const question = textarea.value.trim();
+  if (!question) return;
+
+  submitBtn.disabled = true;
+  renderLoading();
+  const start = performance.now();
+
+  try {
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, top_k: 5 }),
+    });
+    const latencyMs = Math.round(performance.now() - start);
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const data = await res.json();
+    renderResult(data, latencyMs);
+  } catch (err) {
+    renderError(err.message || "Network error — is the API reachable?");
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

@@ -14,6 +14,8 @@ from presidio_analyzer import AnalyzerEngine
 from presidio_analyzer.nlp_engine import NlpEngineProvider
 from presidio_anonymizer import AnonymizerEngine
 from langfuse import get_client, observe
+from pathlib import Path
+from fastapi.responses import HTMLResponse
 
 COLLECTION = "qiskit_docs"
 CACHE_COLLECTION = "query_cache"
@@ -167,7 +169,9 @@ def generate_with_routing(context: str, question: str, top_score: float) -> tupl
 
     return answer, faithfulness, model
 
-
+@app.get("/", response_class=HTMLResponse)
+def serve_ui():
+    return (Path(__file__).parent.parent / "static" / "index.html").read_text(encoding="utf-8")
 @app.post("/query")
 @observe(name="rag_query")
 def query(req: QueryRequest):
