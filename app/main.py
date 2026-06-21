@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
-import redis
+from upstash_redis import Redis as UpstashRedis
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -50,8 +50,9 @@ pii_analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
 pii_anonymizer = AnonymizerEngine()
 
 langfuse = get_client()
-redis_client = redis.from_url(
-    os.getenv("REDIS_URL", "redis://localhost:6379"),
+redis_client = UpstashRedis(
+    url=os.getenv("UPSTASH_REDIS_URL"),
+    token=os.getenv("UPSTASH_REDIS_TOKEN"),
     decode_responses=True,
     protocol=2,
 )
@@ -108,7 +109,7 @@ def get_cached_response(query_vector: list[float]) -> dict | None:
 def store_cached_response(query_vector: list[float], response_payload: dict) -> None:
     try:
         cache_key = str(uuid.uuid4())
-        redis_client.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(response_payload))
+        redis_client.set(cache_key, json.dumps(response_payload), ex=CACHE_TTL_SECONDS)  
         qdrant.upsert(
             collection_name=CACHE_COLLECTION,
             points=[models.PointStruct(id=cache_key, vector=query_vector, payload={})],
