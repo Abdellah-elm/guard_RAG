@@ -51,11 +51,9 @@ pii_anonymizer = AnonymizerEngine()
 
 langfuse = get_client()
 redis_client = UpstashRedis(
-    url=os.getenv("UPSTASH_REDIS_URL"),
-    token=os.getenv("UPSTASH_REDIS_TOKEN"),
-    protocol=2,
+    url=os.getenv("UPSTASH_REDIS_REST_URL"),
+    token=os.getenv("UPSTASH_REDIS_REST_TOKEN"),
 )
-
 if not qdrant.collection_exists(CACHE_COLLECTION):
     qdrant.create_collection(
         collection_name=CACHE_COLLECTION,
