@@ -1,3 +1,11 @@
+---
+title: GuardRAG
+emoji: 🛡️
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+---
 # GuardRAG
 
 **A production-style RAG assistant over the official Qiskit / IBM Quantum documentation — instrumented end-to-end with guardrails, multi-model routing, semantic caching, and observability, not just an answer-generation demo.**
