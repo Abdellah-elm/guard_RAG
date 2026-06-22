@@ -58,7 +58,7 @@ If you're matching this against a role, here's the short version of what I built
 
 ## Why it exists
 
-The hard part of running an LLM application in production isn't generating an answer — it's everything around that: catching hallucinations before they reach a user, redacting PII before it hits a third-party API, controlling cost, knowing when something breaks, and proving any of it actually works. GuardRAG makes that layer visible. Every answer ships with a readout of how it was produced, not just the answer.
+The hard part of running an LLM application in production isn't generating an answer  it's everything around that: catching hallucinations before they reach a user, redacting PII before it hits a third-party API, controlling cost, knowing when something breaks, and proving any of it actually works. GuardRAG makes that layer visible. Every answer ships with a readout of how it was produced, not just the answer.
 
 I chose the Qiskit corpus on purpose. It's a domain I can personally verify — when the system reports a faithfulness rate, I can check it against my own quantum computing background instead of trusting a number blindly.
 
