@@ -1,8 +1,4 @@
 ---
-title: GuardRAG
-emoji: 🛡️
-colorFrom: blue
-colorTo: purple
 sdk: docker
 app_port: 7860
 ---
@@ -92,31 +88,7 @@ Measured against a 54-question golden set (12 in-scope, 20 out-of-scope, 3 ambig
 
 A question comes in, gets screened for PII, embedded locally, checked against a semantic cache, retrieved against the vector store, routed to the right model by confidence, generated, judged for faithfulness, and traced — with a fallback at every step that can fail.
 ![demo](pic/a.png)
-```
-User question
-   │
-   ▼
-PII detection (Presidio, pattern-based entities) — original question kept for retrieval,
-   │                                                  redacted version sent to the 3rd-party LLM
-   ▼
-Embed locally (bge-small) ──► semantic cache lookup (Qdrant + Upstash)
-   │                              │
-   │ miss                         │ hit → return cached response (~200ms)
-   ▼
-Retrieval (Qdrant Cloud, top-k, cosine) ──► score < 0.6 → refuse, no LLM call made
-   │
-   ▼ score ≥ 0.6
-Router: score ≥ 0.65 → gpt-oss-20b (fast)  |  else → gpt-oss-120b (strong)
-   │
-   ▼
-Generation (Groq) ──► API error → fallback to the other tier
-   │
-   ▼
-Faithfulness judge (LLM-as-judge) ──► flagged unfaithful on fast tier → escalate + retry
-   │
-   ▼
-Response + Langfuse trace (tokens, cost, latency, scores) + cache write (confident answers only)
-```
+
 
 ### The guardrails, in detail
 
