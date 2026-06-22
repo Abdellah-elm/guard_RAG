@@ -9,7 +9,7 @@ app_port: 7860
 
 #  GuardRAG
 
-**A production-grade RAG system — not an answer-generation demo.**
+**A production-grade RAG system not an answer-generation demo.**
 
 Most RAG projects stop at "retrieve, then generate." GuardRAG is built around the layer that actually decides whether an LLM app survives contact with real users: catching hallucinations before they reach anyone, redacting PII before it leaves for a third-party API, routing for cost, caching for speed, and tracing every request so you can prove any of it works. The retrieval-and-generation core is the easy 20%. This project is the other 80%.
 
