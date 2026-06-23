@@ -18,7 +18,7 @@ It runs over the official Qiskit / IBM Quantum documentation, is instrumented en
  
  **Stack:** FastAPI · Qdrant · Groq · Langfuse · Presidio · Upstash Redis · Docker on Hugging Face Spaces
 
-![demo](pic/Capture d'écran 2026-06-23 215335.png)
+![demo](pic/s.png)
 
 ---
 
