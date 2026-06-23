@@ -11,7 +11,19 @@ from upstash_redis import Redis as UpstashRedis
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from groq import Groq
+# ── L8 Velox toggle — changer USE_VELOX dans .env pour switcher ─────────────
+USE_VELOX = os.getenv("USE_VELOX", "false").lower() == "true"
+if USE_VELOX:
+    from openai import OpenAI as Groq       # même interface que Groq SDK
+    groq = Groq(
+        base_url=os.getenv("VELOX_BASE_URL", "http://localhost:8000/v1"),
+        api_key=os.getenv("VELOX_API_KEY", "velox-local"),
+    )
+    FAST_MODEL   = os.getenv("VELOX_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
+    STRONG_MODEL = os.getenv("VELOX_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
+else:
+    from groq import Groq                   # Groq original (production)
+# ────────────────────────────────────────────────────────────────────────────
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 from presidio_analyzer import AnalyzerEngine
@@ -25,8 +37,8 @@ logger = logging.getLogger("guardrag")
 COLLECTION = "qiskit_docs"
 CACHE_COLLECTION = "query_cache"
 EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-FAST_MODEL = "openai/gpt-oss-20b"
-STRONG_MODEL = "openai/gpt-oss-120b"
+if not USE_VELOX: FAST_MODEL = "openai/gpt-oss-20b"
+if not USE_VELOX: STRONG_MODEL = "openai/gpt-oss-120b"
 COMPLEXITY_THRESHOLD = 0.65
 REFUSAL_THRESHOLD = 0.6
 CACHE_SIMILARITY_THRESHOLD = 0.95
@@ -40,7 +52,8 @@ qdrant = QdrantClient(
     api_key=os.getenv("QDRANT_API_KEY"),
 )
 embedder = SentenceTransformer(EMBED_MODEL_NAME)
-groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
+if not USE_VELOX:
+    groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 nlp_engine = NlpEngineProvider(nlp_configuration={
     "nlp_engine_name": "spacy",
