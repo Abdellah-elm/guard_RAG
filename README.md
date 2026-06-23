@@ -19,6 +19,7 @@ It runs over the official Qiskit / IBM Quantum documentation, is instrumented en
  **Stack:** FastAPI · Qdrant · Groq · Langfuse · Presidio · Upstash Redis · Docker on Hugging Face Spaces
 
 ![demo](pic/Capture d'écran 2026-06-23 215335.png)
+
 ---
 
 ## In 60 seconds
@@ -88,6 +89,7 @@ Measured against a 54-question golden set (12 in-scope, 20 out-of-scope, 3 ambig
 ## How it works
 
 A question comes in, gets screened for PII, embedded locally, checked against a semantic cache, retrieved against the vector store, routed to the right model by confidence, generated, judged for faithfulness, and traced — with a fallback at every step that can fail.
+
 ![demo](pic/a.png)
 
 
