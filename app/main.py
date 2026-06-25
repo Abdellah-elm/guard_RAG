@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import sys
 import uuid
 from pathlib import Path
 
@@ -11,10 +12,11 @@ from upstash_redis import Redis as UpstashRedis
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-# ── L8 Velox toggle — changer USE_VELOX dans .env pour switcher ─────────────
+
+# ── L8 Velox toggle ─────────────────────────────────────────────────────────
 USE_VELOX = os.getenv("USE_VELOX", "false").lower() == "true"
 if USE_VELOX:
-    from openai import OpenAI as Groq       # même interface que Groq SDK
+    from openai import OpenAI as Groq
     groq = Groq(
         base_url=os.getenv("VELOX_BASE_URL", "http://localhost:8000/v1"),
         api_key=os.getenv("VELOX_API_KEY", "velox-local"),
@@ -22,8 +24,9 @@ if USE_VELOX:
     FAST_MODEL   = os.getenv("VELOX_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
     STRONG_MODEL = os.getenv("VELOX_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 else:
-    from groq import Groq                   # Groq original (production)
+    from groq import Groq
 # ────────────────────────────────────────────────────────────────────────────
+
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 from presidio_analyzer import AnalyzerEngine
@@ -31,27 +34,54 @@ from presidio_analyzer.nlp_engine import NlpEngineProvider
 from presidio_anonymizer import AnonymizerEngine
 from langfuse import get_client, observe
 
+# ── Phase 2 : BM25 sparse encoder ───────────────────────────────────────────
+sys.path.insert(0, str(Path(__file__).parent.parent / "ingestion"))
+try:
+    from bm25_encoder import BM25Encoder
+    _BM25_AVAILABLE = True
+except ImportError:
+    _BM25_AVAILABLE = False
+# ────────────────────────────────────────────────────────────────────────────
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger("guardrag")
 
 COLLECTION = "qiskit_docs_v2"
 CACHE_COLLECTION = "query_cache"
 EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-if not USE_VELOX: FAST_MODEL = "openai/gpt-oss-20b"
-if not USE_VELOX: STRONG_MODEL = "openai/gpt-oss-120b"
-COMPLEXITY_THRESHOLD = 0.65
-REFUSAL_THRESHOLD = 0.6
+BM25_ENCODER_PATH = Path("data/bm25_encoder.pkl")
+
+if not USE_VELOX:
+    FAST_MODEL   = "openai/gpt-oss-20b"
+    STRONG_MODEL = "openai/gpt-oss-120b"
+
+COMPLEXITY_THRESHOLD     = 0.65
+REFUSAL_THRESHOLD        = 0.6
 CACHE_SIMILARITY_THRESHOLD = 0.95
-CACHE_TTL_SECONDS = 86400
+CACHE_TTL_SECONDS        = 86400
 REFUSAL_MESSAGE = "I don't have enough information in the documentation to answer that confidently."
 DOMAIN_ALLOW_LIST = ["Qiskit", "IBM", "MCP", "Python", "Runtime"]
 
 app = FastAPI()
+
 qdrant = QdrantClient(
     url=os.getenv("QDRANT_URL", "http://localhost:6333"),
     api_key=os.getenv("QDRANT_API_KEY"),
 )
+
 embedder = SentenceTransformer(EMBED_MODEL_NAME)
+
+# ── Charger le BM25 encoder ─────────────────────────────────────────────────
+if _BM25_AVAILABLE and BM25_ENCODER_PATH.exists():
+    bm25_encoder = BM25Encoder.load(BM25_ENCODER_PATH)
+    USE_HYBRID = True
+    logger.info(f"BM25 encoder loaded: vocab_size={bm25_encoder.vocab_size}")
+else:
+    bm25_encoder = None
+    USE_HYBRID = False
+    logger.warning("BM25 encoder not found — using dense-only search (run embed_and_index_v2.py)")
+# ────────────────────────────────────────────────────────────────────────────
+
 if not USE_VELOX:
     groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
@@ -59,7 +89,7 @@ nlp_engine = NlpEngineProvider(nlp_configuration={
     "nlp_engine_name": "spacy",
     "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
 }).create_engine()
-pii_analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
+pii_analyzer  = AnalyzerEngine(nlp_engine=nlp_engine)
 pii_anonymizer = AnonymizerEngine()
 
 langfuse = get_client()
@@ -67,11 +97,13 @@ redis_client = UpstashRedis(
     url=os.getenv("UPSTASH_REDIS_REST_URL"),
     token=os.getenv("UPSTASH_REDIS_REST_TOKEN"),
 )
+
 if not qdrant.collection_exists(CACHE_COLLECTION):
     qdrant.create_collection(
         collection_name=CACHE_COLLECTION,
         vectors_config=models.VectorParams(
-            size=embedder.get_embedding_dimension(), distance=models.Distance.COSINE
+            size=embedder.get_embedding_dimension(),
+            distance=models.Distance.COSINE,
         ),
     )
 
@@ -83,7 +115,7 @@ class QueryRequest(BaseModel):
 
 class FeedbackRequest(BaseModel):
     trace_id: str
-    rating: int  # 1 = thumbs up, -1 = thumbs down
+    rating: int          # 1 = thumbs up, -1 = thumbs down
     comment: str | None = None
 
 
@@ -97,7 +129,10 @@ SYSTEM_PROMPT = (
     "value — name what's missing instead of filling the gap."
 )
 
-PII_ENTITIES = ["EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "US_SSN", "IBAN_CODE", "IP_ADDRESS"]
+PII_ENTITIES = [
+    "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD",
+    "US_SSN", "IBAN_CODE", "IP_ADDRESS",
+]
 
 
 def redact_pii(text: str) -> tuple[str, list[str]]:
@@ -110,7 +145,9 @@ def redact_pii(text: str) -> tuple[str, list[str]]:
 def get_cached_response(query_vector: list[float]) -> dict | None:
     try:
         hits = qdrant.query_points(
-            collection_name=CACHE_COLLECTION, query=query_vector, limit=1,
+            collection_name=CACHE_COLLECTION,
+            query=query_vector,
+            limit=1,
             score_threshold=CACHE_SIMILARITY_THRESHOLD,
         ).points
         if not hits:
@@ -132,6 +169,55 @@ def store_cached_response(query_vector: list[float], response_payload: dict) -> 
         )
     except Exception as e:
         logger.warning(f"cache write failed: {e}")
+
+
+def hybrid_retrieve(
+    query_vector: list[float],
+    safe_question: str,
+    top_k: int,
+) -> tuple[list, float]:
+    """
+    Returns (results, top_dense_score).
+    - results         : hybrid-ranked chunks via RRF → sent to the LLM
+    - top_dense_score : cosine similarity of the best dense match
+                        → used for the refusal gate (calibrated at 0.6)
+                        RRF scores (0.01–0.05) cannot be used for this.
+    """
+    # Always compute dense results for the refusal gate score
+    dense_results = qdrant.query_points(
+        collection_name=COLLECTION,
+        query=query_vector,
+        using="dense",
+        limit=20,
+    ).points
+    top_dense_score = dense_results[0].score if dense_results else 0.0
+
+    if USE_HYBRID and bm25_encoder is not None:
+        sparse_indices, sparse_values = bm25_encoder.encode_query(safe_question)
+        if sparse_indices:
+            hybrid_results = qdrant.query_points(
+                collection_name=COLLECTION,
+                prefetch=[
+                    models.Prefetch(
+                        query=query_vector,
+                        using="dense",
+                        limit=20,
+                    ),
+                    models.Prefetch(
+                        query=models.SparseVector(
+                            indices=sparse_indices,
+                            values=sparse_values,
+                        ),
+                        using="sparse",
+                        limit=20,
+                    ),
+                ],
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=top_k,
+            ).points
+            return hybrid_results, top_dense_score
+
+    return dense_results[:top_k], top_dense_score
 
 
 @observe(as_type="generation", name="answer_generation")
@@ -195,7 +281,9 @@ Respond with JSON only, no other text, no markdown fences:
     return {"faithful": None, "unsupported_claims": [], "confidence": 0.0, "raw": None}
 
 
-def generate_with_routing(context: str, question: str, top_score: float) -> tuple[str, dict, str, str]:
+def generate_with_routing(
+    context: str, question: str, top_score: float
+) -> tuple[str, dict, str, str]:
     if top_score >= COMPLEXITY_THRESHOLD:
         model, reason = FAST_MODEL, "routed_fast_high_confidence"
     else:
@@ -205,7 +293,7 @@ def generate_with_routing(context: str, question: str, top_score: float) -> tupl
         answer = generate_answer(context, question, model)
     except Exception as e:
         logger.warning(f"generate_answer failed on {model}: {e}")
-        model = STRONG_MODEL if model == FAST_MODEL else FAST_MODEL
+        model  = STRONG_MODEL if model == FAST_MODEL else FAST_MODEL
         reason = "fallback_on_api_error"
         try:
             answer = generate_answer(context, question, model)
@@ -220,13 +308,13 @@ def generate_with_routing(context: str, question: str, top_score: float) -> tupl
 
     faithfulness = check_faithfulness(context, answer)
 
-    if faithfulness.get("faithful") is False and model == FAST_MODEL:
+    if faithfulness.get("faithful") in (False, None) and model == FAST_MODEL:
         try:
-            model = STRONG_MODEL
+            model  = STRONG_MODEL
             reason = "faithfulness_escalation"
-            escalated_answer = generate_answer(context, question, model)
+            escalated_answer      = generate_answer(context, question, model)
             escalated_faithfulness = check_faithfulness(context, escalated_answer)
-            answer, faithfulness = escalated_answer, escalated_faithfulness
+            answer, faithfulness  = escalated_answer, escalated_faithfulness
         except Exception as e:
             logger.warning(f"escalation to {model} failed: {e}")
 
@@ -242,55 +330,70 @@ def serve_ui():
 @observe(name="rag_query")
 def query(req: QueryRequest):
     trace_id = langfuse.get_current_trace_id()
+
     safe_question, pii_types = redact_pii(req.question)
     if pii_types:
         langfuse.score_current_trace(name="pii_detected", value=1.0, data_type="BOOLEAN")
 
     query_vector = embedder.encode(req.question).tolist()
 
+    # ── Cache lookup ────────────────────────────────────────────────
     cached = get_cached_response(query_vector)
     if cached:
         langfuse.score_current_trace(name="cache_hit", value=1.0, data_type="BOOLEAN")
         return {**cached, "pii_detected": pii_types, "cached": True, "trace_id": trace_id}
 
-    results = qdrant.query_points(
-        collection_name=COLLECTION, query=query_vector, limit=req.top_k
-    ).points
+    # ── Hybrid retrieval (Phase 2) ──────────────────────────────────
+    results, top_dense_score = hybrid_retrieve(query_vector, safe_question, req.top_k)
 
-    if not results or results[0].score < REFUSAL_THRESHOLD:
+    if not results or top_dense_score < REFUSAL_THRESHOLD:
         langfuse.score_current_trace(name="refused", value=1.0, data_type="BOOLEAN")
         return {
             "answer": REFUSAL_MESSAGE,
             "faithfulness": {"faithful": None, "unsupported_claims": [], "confidence": 0.0},
-            "sources": [], "pii_detected": pii_types, "refused": True, "cached": False,
-            "trace_id": trace_id,
+            "sources": [], "pii_detected": pii_types, "refused": True,
+            "cached": False, "trace_id": trace_id,
         }
 
+    # ── Build context with parent_text (Phase 1) ────────────────────
     context = "\n\n".join(
-        f"[{p.payload['doc_title']} — {p.payload['section']}]\n{p.payload.get('parent_text', p.payload['text'])}"
+        f"[{p.payload['doc_title']} — {p.payload['section']}]\n"
+        f"{p.payload.get('parent_text', p.payload['text'])}"
         for p in results
     )
 
     answer, faithfulness, model_used, routing_reason = generate_with_routing(
-        context, safe_question, results[0].score
+        context, safe_question, top_dense_score
     )
+
     langfuse.score_current_trace(
-        name="faithfulness", value=1.0 if faithfulness.get("faithful") else 0.0, data_type="BOOLEAN"
+        name="faithfulness",
+        value=1.0 if faithfulness.get("faithful") else 0.0,
+        data_type="BOOLEAN",
     )
     langfuse.score_current_trace(name="cache_hit", value=0.0, data_type="BOOLEAN")
 
     response_payload = {
-        "answer": answer, "faithfulness": faithfulness,
-        "model_used": model_used, "routing_reason": routing_reason,
+        "answer": answer,
+        "faithfulness": faithfulness,
+        "model_used": model_used,
+        "routing_reason": routing_reason,
         "sources": [
-            {"doc_title": p.payload["doc_title"], "section": p.payload["section"],
-             "url": p.payload["url"], "score": p.score}
+            {
+                "doc_title": p.payload["doc_title"],
+                "section":   p.payload["section"],
+                "url":       p.payload["url"],
+                "score":     p.score,
+            }
             for p in results
         ],
         "refused": False,
     }
 
-    should_cache = routing_reason != "fallback_failed" and faithfulness.get("faithful") is not None
+    should_cache = (
+        routing_reason != "fallback_failed"
+        and faithfulness.get("faithful") is not None
+    )
     if should_cache:
         store_cached_response(query_vector, response_payload)
 
