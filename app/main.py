@@ -34,7 +34,7 @@ from langfuse import get_client, observe
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger("guardrag")
 
-COLLECTION = "qiskit_docs"
+COLLECTION = "qiskit_docs_v2"
 CACHE_COLLECTION = "query_cache"
 EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 if not USE_VELOX: FAST_MODEL = "openai/gpt-oss-20b"
@@ -267,7 +267,7 @@ def query(req: QueryRequest):
         }
 
     context = "\n\n".join(
-        f"[{p.payload['doc_title']} — {p.payload['section']}]\n{p.payload['text']}"
+        f"[{p.payload['doc_title']} — {p.payload['section']}]\n{p.payload.get('parent_text', p.payload['text'])}"
         for p in results
     )
 

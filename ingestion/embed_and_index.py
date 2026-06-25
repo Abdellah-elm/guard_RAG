@@ -6,8 +6,8 @@ from pathlib import Path
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 
-CHUNKS_PATH = Path("data/chunks.jsonl")
-COLLECTION = "qiskit_docs"
+CHUNKS_PATH = Path("data/chunks_v2.jsonl")
+COLLECTION = "qiskit_docs_v2"
 MODEL_NAME = "BAAI/bge-small-en-v1.5"
 
 
