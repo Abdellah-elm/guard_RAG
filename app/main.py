@@ -80,7 +80,34 @@ else:
     bm25_encoder = None
     USE_HYBRID = False
     logger.warning("BM25 encoder not found — using dense-only search (run embed_and_index_v2.py)")
+
+# ── Phase 3 : Cross-encoder reranker ────────────────────────────────────────
+RERANKER_MODEL   = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+RERANK_TOP_N     = 5      # final top-k after reranking
+RETRIEVE_TOP_N   = 10     # candidates fetched per query variant
+USE_RERANKER_ENV = os.getenv("USE_RERANKER", "true").lower() == "true"
+
+try:
+    from sentence_transformers import CrossEncoder
+    if USE_RERANKER_ENV:
+        reranker = CrossEncoder(RERANKER_MODEL, max_length=512)
+        USE_RERANKER = True
+        logger.info(f"Cross-encoder reranker loaded: {RERANKER_MODEL}")
+    else:
+        reranker = None
+        USE_RERANKER = False
+        logger.info("Reranker disabled via USE_RERANKER=false")
+except Exception as e:
+    reranker = None
+    USE_RERANKER = False
+    logger.warning(f"Cross-encoder not available ({e}) — skipping reranking")
 # ────────────────────────────────────────────────────────────────────────────
+
+# ── Phase 4 : Query Expansion ────────────────────────────────────────────────
+USE_QUERY_EXPANSION = os.getenv("USE_QUERY_EXPANSION", "true").lower() == "true"
+EXPAND_MAX_VARIANTS = 2    # number of additional phrasings to generate
+# ────────────────────────────────────────────────────────────────────────────
+
 
 if not USE_VELOX:
     groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -177,18 +204,20 @@ def hybrid_retrieve(
     top_k: int,
 ) -> tuple[list, float]:
     """
+    Hybrid retrieval: dense + sparse BM25 with RRF fusion.
+    Always fetches RETRIEVE_TOP_N candidates (20) for the reranker.
     Returns (results, top_dense_score).
-    - results         : hybrid-ranked chunks via RRF → sent to the LLM
-    - top_dense_score : cosine similarity of the best dense match
-                        → used for the refusal gate (calibrated at 0.6)
-                        RRF scores (0.01–0.05) cannot be used for this.
+
+    top_dense_score : cosine similarity of best dense match
+                      → used for refusal gate (calibrated at 0.6)
+                      RRF scores (0.01–0.05) cannot be used for this.
     """
-    # Always compute dense results for the refusal gate score
+    # Dense results — always needed for refusal gate score
     dense_results = qdrant.query_points(
         collection_name=COLLECTION,
         query=query_vector,
         using="dense",
-        limit=20,
+        limit=RETRIEVE_TOP_N,
     ).points
     top_dense_score = dense_results[0].score if dense_results else 0.0
 
@@ -201,7 +230,7 @@ def hybrid_retrieve(
                     models.Prefetch(
                         query=query_vector,
                         using="dense",
-                        limit=20,
+                        limit=RETRIEVE_TOP_N,
                     ),
                     models.Prefetch(
                         query=models.SparseVector(
@@ -209,15 +238,128 @@ def hybrid_retrieve(
                             values=sparse_values,
                         ),
                         using="sparse",
-                        limit=20,
+                        limit=RETRIEVE_TOP_N,
                     ),
                 ],
                 query=models.FusionQuery(fusion=models.Fusion.RRF),
-                limit=top_k,
+                limit=RETRIEVE_TOP_N,
             ).points
             return hybrid_results, top_dense_score
 
-    return dense_results[:top_k], top_dense_score
+    return dense_results[:RETRIEVE_TOP_N], top_dense_score
+
+
+def expand_query(question: str) -> list[str]:
+    """
+    Generate EXPAND_MAX_VARIANTS alternative phrasings of the question.
+    Returns [original_question, variant_1, variant_2, ...].
+    Falls back to [original_question] on any error — query expansion is
+    a best-effort optimisation, never a hard dependency.
+    """
+    if not USE_QUERY_EXPANSION:
+        return [question]
+    try:
+        response = groq.chat.completions.create(
+            model=FAST_MODEL,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Generate {EXPAND_MAX_VARIANTS} alternative phrasings of this question "
+                    f"about Qiskit / IBM Quantum documentation.\n"
+                    f"Return only the phrasings, one per line, no numbering, no explanation.\n"
+                    f"Question: {question}"
+                ),
+            }],
+            temperature=0.3,
+            max_tokens=120,
+        )
+        variants = [
+            v.strip()
+            for v in response.choices[0].message.content.strip().split("\n")
+            if v.strip() and v.strip() != question
+        ]
+        result = [question] + variants[:EXPAND_MAX_VARIANTS]
+        logger.info(f"Query expansion: {len(result)} variants for '{question[:60]}'")
+        return result
+    except Exception as e:
+        logger.warning(f"query expansion failed: {e} — using original query only")
+        return [question]
+
+
+def multi_query_retrieve(
+    original_vector: list[float],
+    safe_question: str,
+    top_k: int,
+) -> tuple[list, float]:
+    """
+    Phase 4 : Query Expansion + Hybrid Retrieval.
+
+    1. Generate query variants via expand_query().
+    2. Embed each variant and call hybrid_retrieve().
+    3. Merge results: deduplicate by point id, keep union of all candidates.
+    4. The refusal gate score comes from the ORIGINAL query's dense score only
+       (calibrated at 0.6 — variant scores would be noisier).
+
+    Returns (merged_candidates, top_dense_score_of_original_query).
+    """
+    # Original query dense score for the refusal gate (always from original)
+    dense_results = qdrant.query_points(
+        collection_name=COLLECTION,
+        query=original_vector,
+        using="dense",
+        limit=RETRIEVE_TOP_N,
+    ).points
+    top_dense_score = dense_results[0].score if dense_results else 0.0
+
+    # Query variants
+    if USE_QUERY_EXPANSION:
+        variants = expand_query(safe_question)
+    else:
+        variants = [safe_question]
+
+    # Retrieve for each variant and merge (deduplicate by point id)
+    seen_ids: set = set()
+    merged: list = []
+
+    for i, variant in enumerate(variants):
+        if i == 0:
+            # Original query — reuse already-computed dense results
+            v_vector = original_vector
+        else:
+            v_vector = embedder.encode(variant).tolist()
+
+        # Hybrid retrieve for this variant
+        candidates, _ = hybrid_retrieve(v_vector, variant, top_k)
+
+        for c in candidates:
+            if c.id not in seen_ids:
+                seen_ids.add(c.id)
+                merged.append(c)
+
+    logger.info(
+        f"multi_query_retrieve: {len(variants)} variants → "
+        f"{len(merged)} unique candidates (top_dense={top_dense_score:.3f})"
+    )
+    return merged, top_dense_score
+
+
+def rerank(question: str, candidates: list, top_k: int) -> list:
+    """
+    Cross-encoder reranking: scores each (question, chunk) pair jointly.
+    Returns top_k results sorted by reranker score descending.
+    Falls back to the original order if the reranker is unavailable.
+    """
+    if not USE_RERANKER or reranker is None or not candidates:
+        return candidates[:top_k]
+
+    try:
+        pairs = [(question, r.payload.get("text", "")) for r in candidates]
+        scores = reranker.predict(pairs, show_progress_bar=False)
+        ranked = sorted(zip(scores, candidates), key=lambda x: float(x[0]), reverse=True)
+        return [r for _, r in ranked[:top_k]]
+    except Exception as e:
+        logger.warning(f"reranking failed: {e} — using original order")
+        return candidates[:top_k]
 
 
 @observe(as_type="generation", name="answer_generation")
@@ -343,10 +485,10 @@ def query(req: QueryRequest):
         langfuse.score_current_trace(name="cache_hit", value=1.0, data_type="BOOLEAN")
         return {**cached, "pii_detected": pii_types, "cached": True, "trace_id": trace_id}
 
-    # ── Hybrid retrieval (Phase 2) ──────────────────────────────────
-    results, top_dense_score = hybrid_retrieve(query_vector, safe_question, req.top_k)
+    # ── Hybrid retrieval + Query Expansion (Phase 2+4) ─────────────
+    candidates, top_dense_score = multi_query_retrieve(query_vector, safe_question, req.top_k)
 
-    if not results or top_dense_score < REFUSAL_THRESHOLD:
+    if not candidates or top_dense_score < REFUSAL_THRESHOLD:
         langfuse.score_current_trace(name="refused", value=1.0, data_type="BOOLEAN")
         return {
             "answer": REFUSAL_MESSAGE,
@@ -354,6 +496,9 @@ def query(req: QueryRequest):
             "sources": [], "pii_detected": pii_types, "refused": True,
             "cached": False, "trace_id": trace_id,
         }
+
+    # ── Cross-encoder reranking (Phase 3) ───────────────────────────
+    results = rerank(safe_question, candidates, top_k=RERANK_TOP_N)
 
     # ── Build context with parent_text (Phase 1) ────────────────────
     context = "\n\n".join(
