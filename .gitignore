@@ -6,3 +6,6 @@ venv/
 *.jsonl
 data/qiskit-docs/
 .DS_Store
+data/*.pkl
+data/chunks*.jsonl
+pic/
