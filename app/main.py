@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import sys
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -12,18 +13,11 @@ from upstash_redis import Redis as UpstashRedis
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-<<<<<<< HEAD
 
-# ── L8 Velox toggle ─────────────────────────────────────────────────────────
+# ── Velox toggle ─────────────────────────────────────────────────────────────
 USE_VELOX = os.getenv("USE_VELOX", "false").lower() == "true"
 if USE_VELOX:
     from openai import OpenAI as Groq
-=======
-# ── L8 Velox toggle — changer USE_VELOX dans .env pour switcher ─────────────
-USE_VELOX = os.getenv("USE_VELOX", "false").lower() == "true"
-if USE_VELOX:
-    from openai import OpenAI as Groq       # même interface que Groq SDK
->>>>>>> ace67b64b9a57f43d62f127ed1b8c440751345d8
     groq = Groq(
         base_url=os.getenv("VELOX_BASE_URL", "http://localhost:8000/v1"),
         api_key=os.getenv("VELOX_API_KEY", "velox-local"),
@@ -31,49 +25,55 @@ if USE_VELOX:
     FAST_MODEL   = os.getenv("VELOX_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
     STRONG_MODEL = os.getenv("VELOX_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 else:
-    from groq import Groq                   # Groq original (production)
-# ────────────────────────────────────────────────────────────────────────────
+    from groq import Groq
+# ─────────────────────────────────────────────────────────────────────────────
+
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
-from presidio_analyzer import AnalyzerEngine
+from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern as PPattern
 from presidio_analyzer.nlp_engine import NlpEngineProvider
 from presidio_anonymizer import AnonymizerEngine
 from langfuse import get_client, observe
 
-# ── Phase 2 : BM25 sparse encoder ───────────────────────────────────────────
+# ── Phase 2 : BM25 sparse encoder ────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent.parent / "ingestion"))
 try:
     from bm25_encoder import BM25Encoder
     _BM25_AVAILABLE = True
 except ImportError:
     _BM25_AVAILABLE = False
-# ────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger("guardrag")
 
-COLLECTION = "qiskit_docs_v2"
-CACHE_COLLECTION = "query_cache"
-EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-<<<<<<< HEAD
-BM25_ENCODER_PATH = Path("data/bm25_encoder.pkl")
+# ── Constants ─────────────────────────────────────────────────────────────────
+COLLECTION              = "qiskit_docs_v2"
+CACHE_COLLECTION        = "query_cache"
+EMBED_MODEL_NAME        = "BAAI/bge-small-en-v1.5"
+BM25_ENCODER_PATH       = Path("data/bm25_encoder.pkl")
+BM25_ENCODER_URL        = "https://github.com/Abdellah-elm/guard_RAG/raw/main/data/bm25_encoder.pkl"
 
 if not USE_VELOX:
     FAST_MODEL   = "openai/gpt-oss-20b"
     STRONG_MODEL = "openai/gpt-oss-120b"
 
-COMPLEXITY_THRESHOLD     = 0.65
-REFUSAL_THRESHOLD        = 0.6
-=======
-if not USE_VELOX: FAST_MODEL = "openai/gpt-oss-20b"
-if not USE_VELOX: STRONG_MODEL = "openai/gpt-oss-120b"
-COMPLEXITY_THRESHOLD = 0.65
-REFUSAL_THRESHOLD = 0.6
->>>>>>> ace67b64b9a57f43d62f127ed1b8c440751345d8
+COMPLEXITY_THRESHOLD       = 0.65
+REFUSAL_THRESHOLD          = 0.6
 CACHE_SIMILARITY_THRESHOLD = 0.95
-CACHE_TTL_SECONDS        = 86400
+CACHE_TTL_SECONDS          = 86400
 REFUSAL_MESSAGE = "I don't have enough information in the documentation to answer that confidently."
-DOMAIN_ALLOW_LIST = ["Qiskit", "IBM", "MCP", "Python", "Runtime"]
+
+# ── Phase 3 constants ─────────────────────────────────────────────────────────
+RERANKER_MODEL   = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+RERANK_TOP_N     = 5
+RETRIEVE_TOP_N   = 10
+USE_RERANKER_ENV = os.getenv("USE_RERANKER", "true").lower() == "true"
+
+# ── Phase 4 constants ─────────────────────────────────────────────────────────
+USE_QUERY_EXPANSION = os.getenv("USE_QUERY_EXPANSION", "true").lower() == "true"
+EXPAND_MAX_VARIANTS = 2
+# ─────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI()
 
@@ -83,24 +83,32 @@ qdrant = QdrantClient(
 )
 
 embedder = SentenceTransformer(EMBED_MODEL_NAME)
-<<<<<<< HEAD
 
-# ── Charger le BM25 encoder ─────────────────────────────────────────────────
-if _BM25_AVAILABLE and BM25_ENCODER_PATH.exists():
-    bm25_encoder = BM25Encoder.load(BM25_ENCODER_PATH)
-    USE_HYBRID = True
-    logger.info(f"BM25 encoder loaded: vocab_size={bm25_encoder.vocab_size}")
+# ── BM25 encoder (download from GitHub if not present) ───────────────────────
+if _BM25_AVAILABLE:
+    if not BM25_ENCODER_PATH.exists():
+        try:
+            BM25_ENCODER_PATH.parent.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Downloading BM25 encoder from GitHub...")
+            urllib.request.urlretrieve(BM25_ENCODER_URL, BM25_ENCODER_PATH)
+            logger.info("BM25 encoder downloaded successfully")
+        except Exception as e:
+            logger.warning(f"Failed to download BM25 encoder: {e}")
+    if BM25_ENCODER_PATH.exists():
+        bm25_encoder = BM25Encoder.load(BM25_ENCODER_PATH)
+        USE_HYBRID = True
+        logger.info(f"BM25 encoder loaded: vocab_size={bm25_encoder.vocab_size}")
+    else:
+        bm25_encoder = None
+        USE_HYBRID = False
+        logger.warning("BM25 encoder not available — using dense-only search")
 else:
     bm25_encoder = None
     USE_HYBRID = False
-    logger.warning("BM25 encoder not found — using dense-only search (run embed_and_index_v2.py)")
+    logger.warning("BM25Encoder not importable — using dense-only search")
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── Phase 3 : Cross-encoder reranker ────────────────────────────────────────
-RERANKER_MODEL   = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-RERANK_TOP_N     = 5      # final top-k after reranking
-RETRIEVE_TOP_N   = 10     # candidates fetched per query variant
-USE_RERANKER_ENV = os.getenv("USE_RERANKER", "true").lower() == "true"
-
+# ── Phase 3 : Cross-encoder reranker ─────────────────────────────────────────
 try:
     from sentence_transformers import CrossEncoder
     if USE_RERANKER_ENV:
@@ -115,16 +123,8 @@ except Exception as e:
     reranker = None
     USE_RERANKER = False
     logger.warning(f"Cross-encoder not available ({e}) — skipping reranking")
-# ────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── Phase 4 : Query Expansion ────────────────────────────────────────────────
-USE_QUERY_EXPANSION = os.getenv("USE_QUERY_EXPANSION", "true").lower() == "true"
-EXPAND_MAX_VARIANTS = 2    # number of additional phrasings to generate
-# ────────────────────────────────────────────────────────────────────────────
-
-
-=======
->>>>>>> ace67b64b9a57f43d62f127ed1b8c440751345d8
 if not USE_VELOX:
     groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
@@ -133,12 +133,15 @@ nlp_engine = NlpEngineProvider(nlp_configuration={
     "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
 }).create_engine()
 pii_analyzer  = AnalyzerEngine(nlp_engine=nlp_engine)
-from presidio_analyzer import PatternRecognizer, Pattern as PPattern
+
+# ── Phase 6 : SSN regex fix ───────────────────────────────────────────────────
 _ssn_recognizer = PatternRecognizer(
     supported_entity="US_SSN",
     patterns=[PPattern(name="SSN_REGEX", regex=r"\b\d{3}-\d{2}-\d{4}\b", score=0.85)]
 )
 pii_analyzer.registry.add_recognizer(_ssn_recognizer)
+# ─────────────────────────────────────────────────────────────────────────────
+
 pii_anonymizer = AnonymizerEngine()
 
 langfuse = get_client()
@@ -164,7 +167,7 @@ class QueryRequest(BaseModel):
 
 class FeedbackRequest(BaseModel):
     trace_id: str
-    rating: int          # 1 = thumbs up, -1 = thumbs down
+    rating: int
     comment: str | None = None
 
 
@@ -225,16 +228,6 @@ def hybrid_retrieve(
     safe_question: str,
     top_k: int,
 ) -> tuple[list, float]:
-    """
-    Hybrid retrieval: dense + sparse BM25 with RRF fusion.
-    Always fetches RETRIEVE_TOP_N candidates (20) for the reranker.
-    Returns (results, top_dense_score).
-
-    top_dense_score : cosine similarity of best dense match
-                      → used for refusal gate (calibrated at 0.6)
-                      RRF scores (0.01–0.05) cannot be used for this.
-    """
-    # Dense results — always needed for refusal gate score
     dense_results = qdrant.query_points(
         collection_name=COLLECTION,
         query=query_vector,
@@ -249,16 +242,9 @@ def hybrid_retrieve(
             hybrid_results = qdrant.query_points(
                 collection_name=COLLECTION,
                 prefetch=[
+                    models.Prefetch(query=query_vector, using="dense", limit=RETRIEVE_TOP_N),
                     models.Prefetch(
-                        query=query_vector,
-                        using="dense",
-                        limit=RETRIEVE_TOP_N,
-                    ),
-                    models.Prefetch(
-                        query=models.SparseVector(
-                            indices=sparse_indices,
-                            values=sparse_values,
-                        ),
+                        query=models.SparseVector(indices=sparse_indices, values=sparse_values),
                         using="sparse",
                         limit=RETRIEVE_TOP_N,
                     ),
@@ -272,12 +258,6 @@ def hybrid_retrieve(
 
 
 def expand_query(question: str) -> list[str]:
-    """
-    Generate EXPAND_MAX_VARIANTS alternative phrasings of the question.
-    Returns [original_question, variant_1, variant_2, ...].
-    Falls back to [original_question] on any error — query expansion is
-    a best-effort optimisation, never a hard dependency.
-    """
     if not USE_QUERY_EXPANSION:
         return [question]
     try:
@@ -313,18 +293,6 @@ def multi_query_retrieve(
     safe_question: str,
     top_k: int,
 ) -> tuple[list, float]:
-    """
-    Phase 4 : Query Expansion + Hybrid Retrieval.
-
-    1. Generate query variants via expand_query().
-    2. Embed each variant and call hybrid_retrieve().
-    3. Merge results: deduplicate by point id, keep union of all candidates.
-    4. The refusal gate score comes from the ORIGINAL query's dense score only
-       (calibrated at 0.6 — variant scores would be noisier).
-
-    Returns (merged_candidates, top_dense_score_of_original_query).
-    """
-    # Original query dense score for the refusal gate (always from original)
     dense_results = qdrant.query_points(
         collection_name=COLLECTION,
         query=original_vector,
@@ -333,26 +301,14 @@ def multi_query_retrieve(
     ).points
     top_dense_score = dense_results[0].score if dense_results else 0.0
 
-    # Query variants
-    if USE_QUERY_EXPANSION:
-        variants = expand_query(safe_question)
-    else:
-        variants = [safe_question]
+    variants = expand_query(safe_question) if USE_QUERY_EXPANSION else [safe_question]
 
-    # Retrieve for each variant and merge (deduplicate by point id)
     seen_ids: set = set()
     merged: list = []
 
     for i, variant in enumerate(variants):
-        if i == 0:
-            # Original query — reuse already-computed dense results
-            v_vector = original_vector
-        else:
-            v_vector = embedder.encode(variant).tolist()
-
-        # Hybrid retrieve for this variant
+        v_vector = original_vector if i == 0 else embedder.encode(variant).tolist()
         candidates, _ = hybrid_retrieve(v_vector, variant, top_k)
-
         for c in candidates:
             if c.id not in seen_ids:
                 seen_ids.add(c.id)
@@ -366,14 +322,8 @@ def multi_query_retrieve(
 
 
 def rerank(question: str, candidates: list, top_k: int) -> list:
-    """
-    Cross-encoder reranking: scores each (question, chunk) pair jointly.
-    Returns top_k results sorted by reranker score descending.
-    Falls back to the original order if the reranker is unavailable.
-    """
     if not USE_RERANKER or reranker is None or not candidates:
         return candidates[:top_k]
-
     try:
         pairs = [(question, r.payload.get("text", "")) for r in candidates]
         scores = reranker.predict(pairs, show_progress_bar=False)
@@ -476,9 +426,9 @@ def generate_with_routing(
         try:
             model  = STRONG_MODEL
             reason = "faithfulness_escalation"
-            escalated_answer      = generate_answer(context, question, model)
+            escalated_answer       = generate_answer(context, question, model)
             escalated_faithfulness = check_faithfulness(context, escalated_answer)
-            answer, faithfulness  = escalated_answer, escalated_faithfulness
+            answer, faithfulness   = escalated_answer, escalated_faithfulness
         except Exception as e:
             logger.warning(f"escalation to {model} failed: {e}")
 
@@ -501,13 +451,11 @@ def query(req: QueryRequest):
 
     query_vector = embedder.encode(req.question).tolist()
 
-    # ── Cache lookup ────────────────────────────────────────────────
     cached = get_cached_response(query_vector)
     if cached:
         langfuse.score_current_trace(name="cache_hit", value=1.0, data_type="BOOLEAN")
         return {**cached, "pii_detected": pii_types, "cached": True, "trace_id": trace_id}
 
-    # ── Hybrid retrieval + Query Expansion (Phase 2+4) ─────────────
     candidates, top_dense_score = multi_query_retrieve(query_vector, safe_question, req.top_k)
 
     if not candidates or top_dense_score < REFUSAL_THRESHOLD:
@@ -519,10 +467,8 @@ def query(req: QueryRequest):
             "cached": False, "trace_id": trace_id,
         }
 
-    # ── Cross-encoder reranking (Phase 3) ───────────────────────────
     results = rerank(safe_question, candidates, top_k=RERANK_TOP_N)
 
-    # ── Build context with parent_text (Phase 1) ────────────────────
     context = "\n\n".join(
         f"[{p.payload['doc_title']} — {p.payload['section']}]\n"
         f"{p.payload.get('parent_text', p.payload['text'])}"
