@@ -117,6 +117,12 @@ nlp_engine = NlpEngineProvider(nlp_configuration={
     "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
 }).create_engine()
 pii_analyzer  = AnalyzerEngine(nlp_engine=nlp_engine)
+from presidio_analyzer import PatternRecognizer, Pattern as PPattern
+_ssn_recognizer = PatternRecognizer(
+    supported_entity="US_SSN",
+    patterns=[PPattern(name="SSN_REGEX", regex=r"\b\d{3}-\d{2}-\d{4}\b", score=0.85)]
+)
+pii_analyzer.registry.add_recognizer(_ssn_recognizer)
 pii_anonymizer = AnonymizerEngine()
 
 langfuse = get_client()
