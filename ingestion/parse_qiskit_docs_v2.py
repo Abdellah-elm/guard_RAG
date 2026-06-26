@@ -150,12 +150,8 @@ def make_parent_child_chunks(
 
 
 def doc_url(relative_path: Path) -> str:
-    parts = relative_path.parts
-    if parts[0] == "docs":
-        relative_path = Path(*parts[1:])
     slug = relative_path.with_suffix("").as_posix()
     return f"https://quantum.cloud.ibm.com/docs/{slug}"
-
 # ──────────────────────────────────────────────────────────────────
 # MDX file processor
 # ──────────────────────────────────────────────────────────────────
@@ -295,7 +291,7 @@ def main() -> None:
     args = parser.parse_args()
 
     all_records: list[dict] = []
-    docs_root = args.guides_dir.parent.parent.parent  # data/qiskit-docs
+    docs_root = args.guides_dir.parent  # data/qiskit-docs
 
     # 1. Guides
     if args.guides_dir.exists():
