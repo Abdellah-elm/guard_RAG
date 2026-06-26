@@ -12,11 +12,18 @@ from upstash_redis import Redis as UpstashRedis
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+<<<<<<< HEAD
 
 # ── L8 Velox toggle ─────────────────────────────────────────────────────────
 USE_VELOX = os.getenv("USE_VELOX", "false").lower() == "true"
 if USE_VELOX:
     from openai import OpenAI as Groq
+=======
+# ── L8 Velox toggle — changer USE_VELOX dans .env pour switcher ─────────────
+USE_VELOX = os.getenv("USE_VELOX", "false").lower() == "true"
+if USE_VELOX:
+    from openai import OpenAI as Groq       # même interface que Groq SDK
+>>>>>>> ace67b64b9a57f43d62f127ed1b8c440751345d8
     groq = Groq(
         base_url=os.getenv("VELOX_BASE_URL", "http://localhost:8000/v1"),
         api_key=os.getenv("VELOX_API_KEY", "velox-local"),
@@ -24,9 +31,8 @@ if USE_VELOX:
     FAST_MODEL   = os.getenv("VELOX_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
     STRONG_MODEL = os.getenv("VELOX_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 else:
-    from groq import Groq
+    from groq import Groq                   # Groq original (production)
 # ────────────────────────────────────────────────────────────────────────────
-
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 from presidio_analyzer import AnalyzerEngine
@@ -49,6 +55,7 @@ logger = logging.getLogger("guardrag")
 COLLECTION = "qiskit_docs_v2"
 CACHE_COLLECTION = "query_cache"
 EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
+<<<<<<< HEAD
 BM25_ENCODER_PATH = Path("data/bm25_encoder.pkl")
 
 if not USE_VELOX:
@@ -57,6 +64,12 @@ if not USE_VELOX:
 
 COMPLEXITY_THRESHOLD     = 0.65
 REFUSAL_THRESHOLD        = 0.6
+=======
+if not USE_VELOX: FAST_MODEL = "openai/gpt-oss-20b"
+if not USE_VELOX: STRONG_MODEL = "openai/gpt-oss-120b"
+COMPLEXITY_THRESHOLD = 0.65
+REFUSAL_THRESHOLD = 0.6
+>>>>>>> ace67b64b9a57f43d62f127ed1b8c440751345d8
 CACHE_SIMILARITY_THRESHOLD = 0.95
 CACHE_TTL_SECONDS        = 86400
 REFUSAL_MESSAGE = "I don't have enough information in the documentation to answer that confidently."
@@ -70,6 +83,7 @@ qdrant = QdrantClient(
 )
 
 embedder = SentenceTransformer(EMBED_MODEL_NAME)
+<<<<<<< HEAD
 
 # ── Charger le BM25 encoder ─────────────────────────────────────────────────
 if _BM25_AVAILABLE and BM25_ENCODER_PATH.exists():
@@ -109,6 +123,8 @@ EXPAND_MAX_VARIANTS = 2    # number of additional phrasings to generate
 # ────────────────────────────────────────────────────────────────────────────
 
 
+=======
+>>>>>>> ace67b64b9a57f43d62f127ed1b8c440751345d8
 if not USE_VELOX:
     groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
