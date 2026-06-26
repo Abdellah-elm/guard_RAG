@@ -34,7 +34,7 @@ CHUNKS_PATH = Path("data/chunks_v2.jsonl")
 COLLECTION = "qiskit_docs_v2"
 EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 BM25_ENCODER_PATH = Path("data/bm25_encoder.pkl")
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 # ─────────────────────────────────────────────────────────────────
 
 
