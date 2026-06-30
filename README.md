@@ -11,7 +11,7 @@ Most RAG projects stop at "retrieve, then generate." GuardRAG is built around th
 
 It runs over the official Qiskit / IBM Quantum documentation (guides + tutorials + API reference — 1 766 chunks), is instrumented end to end, and was measured against a **213-question evaluation set** on the **live deployment** — not on a laptop, not on cherry-picked examples.
 
-**Try it live:** https://layvay-guard-rag.hf.space/
+**Try it live (DEMO) :** https://layvay-guard-rag.hf.space/
 **Traces & cost dashboard:** [Langfuse](https://langfuse.com)
 **Stack:** FastAPI · Qdrant · Groq · Langfuse · Presidio · Upstash Redis · Docker on Hugging Face Spaces
 
